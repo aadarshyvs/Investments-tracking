@@ -1097,17 +1097,20 @@ tbody td:first-child{padding-left:1.2rem}tbody td:last-child{padding-right:1.2re
       <!-- Import duty config -->
       <div style="background:var(--s2);border:1.5px solid var(--b2);border-radius:14px;padding:1rem 1.1rem;margin-bottom:.85rem">
         <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--t3);margin-bottom:.6rem">Gold &amp; Silver Import Duty</div>
-        <div style="font-size:.76rem;color:var(--t2);margin-bottom:.7rem;line-height:1.6">Applied to international spot price to match Indian market. Current: Gold <strong style="color:var(--t1)">12.5%</strong> &#183; Silver <strong style="color:var(--t1)">6%</strong></div>
+        <div style="font-size:.76rem;color:var(--t2);margin-bottom:.7rem;line-height:1.6">
+          <span style="color:var(--green);font-weight:700">●</span> <strong style="color:var(--t1)">MCX price is fetched first</strong> — duty is already baked in, no factor applied.<br>
+          This fallback is only used when MCX is unavailable. Current rate: <strong style="color:var(--t1)">15%</strong> (10% BCD + 5% AIDC, effective May 13 2026).
+        </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:.7rem">
           <div class="fg">
             <label class="flabel">&#129351; Gold Duty %</label>
-            <div style="position:relative"><input class="finput" id="gold-duty" type="number" placeholder="9.75" step="0.25" min="0" max="50" inputmode="decimal" style="padding-right:2.1rem"><span style="position:absolute;right:.82rem;top:50%;transform:translateY(-50%);font-size:.8rem;color:var(--t3);pointer-events:none;font-family:'IBM Plex Mono',monospace">%</span></div>
-            <span class="fhint">Multiplier: <span id="gold-factor-preview" style="color:var(--gold);font-family:'IBM Plex Mono',monospace;font-weight:700">&#215;1.0975</span></span>
+            <div style="position:relative"><input class="finput" id="gold-duty" type="number" placeholder="15" step="0.25" min="0" max="50" inputmode="decimal" style="padding-right:2.1rem"><span style="position:absolute;right:.82rem;top:50%;transform:translateY(-50%);font-size:.8rem;color:var(--t3);pointer-events:none;font-family:'IBM Plex Mono',monospace">%</span></div>
+            <span class="fhint">Multiplier: <span id="gold-factor-preview" style="color:var(--gold);font-family:'IBM Plex Mono',monospace;font-weight:700">&#215;1.1500</span></span>
           </div>
           <div class="fg">
             <label class="flabel">&#129352; Silver Duty %</label>
-            <div style="position:relative"><input class="finput" id="silver-duty" type="number" placeholder="6" step="0.25" min="0" max="50" inputmode="decimal" style="padding-right:2.1rem"><span style="position:absolute;right:.82rem;top:50%;transform:translateY(-50%);font-size:.8rem;color:var(--t3);pointer-events:none;font-family:'IBM Plex Mono',monospace">%</span></div>
-            <span class="fhint">Multiplier: <span id="silver-factor-preview" style="color:var(--silver);font-family:'IBM Plex Mono',monospace;font-weight:700">&#215;1.06</span></span>
+            <div style="position:relative"><input class="finput" id="silver-duty" type="number" placeholder="15" step="0.25" min="0" max="50" inputmode="decimal" style="padding-right:2.1rem"><span style="position:absolute;right:.82rem;top:50%;transform:translateY(-50%);font-size:.8rem;color:var(--t3);pointer-events:none;font-family:'IBM Plex Mono',monospace">%</span></div>
+            <span class="fhint">Multiplier: <span id="silver-factor-preview" style="color:var(--silver);font-family:'IBM Plex Mono',monospace;font-weight:700">&#215;1.1500</span></span>
           </div>
         </div>
       </div>
@@ -1287,7 +1290,7 @@ function authInit(){
 /* ═══════════════════════════════════
    THEME
 ═══════════════════════════════════ */
-const S={holdings:[],sold:[],prices:{},usdInr:85,url:localStorage.getItem('pf_url')||'',goldDuty:+(localStorage.getItem('pf_gold_duty')||9.75),silverDuty:+(localStorage.getItem('pf_silver_duty')||6),filter:'all',editId:null,sellingId:null,page:'dashboard',charts:{},
+const S={holdings:[],sold:[],prices:{},usdInr:85,url:localStorage.getItem('pf_url')||'',goldDuty:+(localStorage.getItem('pf_gold_duty')||15),silverDuty:+(localStorage.getItem('pf_silver_duty')||15),filter:'all',editId:null,sellingId:null,page:'dashboard',charts:{},
   theme:matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'};
 
 function applyTheme(t){
@@ -1437,9 +1440,57 @@ async function fetchGooglePrices(holdings){
   }
 }
 
+// ── Live duty auto-detection: compare MCX to international spot ──────────────
+// Runs once per session, updates S.goldDuty/silverDuty if MCX is accessible.
+// This means the duty % shown in settings always reflects the real market rate.
+async function detectLiveDuty(){
+  try{
+    // Fetch both MCX and COMEX concurrently
+    const [mcxRes, comexRes, fxRes] = await Promise.allSettled([
+      yf('GOLDPETAL.MCX'),   // per gram, duty-inclusive
+      yf('GC=F'),             // COMEX USD/oz, pre-duty
+      fetch('https://api.frankfurter.app/latest?from=USD&to=INR',{signal:AbortSignal.timeout(5000)})
+    ]);
+
+    let usdInr = S.usdInr;
+    if(fxRes.status==='fulfilled'&&fxRes.value.ok){
+      const fxj=await fxRes.value.json();
+      if(fxj?.rates?.INR>50) usdInr=fxj.rates.INR;
+    }
+
+    if(mcxRes.status==='fulfilled'&&comexRes.status==='fulfilled'){
+      const mcxPerGram = mcxRes.value.price; // ₹/g, duty-inclusive
+      const comexUsdOz = comexRes.value.price; // USD/oz, pre-duty
+      const comexInrGram = (comexUsdOz / 31.1035) * usdInr; // ₹/g international
+
+      if(mcxPerGram>5000 && comexInrGram>1000){
+        // Effective duty = (MCX / intl) - 1
+        const effectiveDuty = ((mcxPerGram / comexInrGram) - 1) * 100;
+        // Sanity check: duty should be between 1% and 40%
+        if(effectiveDuty>1 && effectiveDuty<40){
+          const rounded = Math.round(effectiveDuty * 4) / 4; // round to nearest 0.25
+          S.goldDuty = rounded;
+          S.silverDuty = rounded; // silver duty matches gold since May 2026
+          // Update localStorage so settings panel reflects it
+          localStorage.setItem('pf_gold_duty', rounded);
+          localStorage.setItem('pf_silver_duty', rounded);
+          console.log(`[Duty] Auto-detected: ${rounded.toFixed(2)}% (MCX ₹${mcxPerGram.toFixed(0)}/g vs intl ₹${comexInrGram.toFixed(0)}/g)`);
+          // Refresh duty preview in settings if open
+          updateDutyPreviews();
+        }
+      }
+    }
+  }catch(e){
+    console.warn('[Duty] Auto-detect failed:', e.message);
+  }
+}
+
 // ── Main fetchPrices orchestrator ─────────────────────────────────────────
 async function fetchPrices(){
   const ozToGram=()=>S.usdInr/31.1035;
+
+  // ── Step 0: Auto-detect live duty rate from MCX vs COMEX spread ───────
+  detectLiveDuty(); // fire-and-forget; updates S.goldDuty/silverDuty in background
 
   // ── Step 1: Google Sheets (server-side Yahoo — no CORS, most reliable) ─
   let gfPrices={};
@@ -1475,127 +1526,117 @@ async function fetchPrices(){
       if(h.type==='mutual_fund'){
         S.prices[k]=await mfp(h.symbol);
       }
-      else if(h.type==='gold'){
+      else if(h.type==='gold'||h.type==='silver'){
+        const isGold=h.type==='gold';
         let set=false;
-        // India gold premium factor: international spot × duty factor ≈ Indian MCX/IBJA rate
-        const INDIA_GOLD=1+(S.goldDuty/100);
-        const INDIA_SILVER=1+(S.silverDuty/100);
 
-        // 0. metals.live — free, no-auth, CORS-friendly USD spot price
-        try{
-          const gj=await fetch('https://metals.live/api/spot?metal=gold',{signal:AbortSignal.timeout(7000)});
-          if(gj.ok){
-            const arr=await gj.json();
-            const usdOz=arr?.[0]?.price||arr?.price;
-            if(usdOz>500){
-              const perGram=+((usdOz/31.1035)*S.usdInr*INDIA_GOLD).toFixed(2);
-              S.prices[k]={price:perGram,prev:perGram,src:'metals.live'};
-              set=true;
-            }
-          }
-        }catch(e){}
+        // ── STRATEGY: MCX is always ground truth (duty already baked in).
+        //   Use it as primary. Fall back to intl spot × live duty factor only if MCX fails.
 
-        // 1. goldprice.org INR endpoint — gives forex-converted INR spot
-        if(!set){try{
-          const gj=await fetchProxy('https://data-asg.goldprice.org/dbXRates/INR',
-            j=>j&&j.items&&j.items[0]&&j.items[0].xauPrice>0);
-          const xauInr=gj.items[0].xauPrice;
-          if(xauInr>200000&&xauInr<1500000){
-            const perGram=+((xauInr/31.1035)*INDIA_GOLD).toFixed(2);
-            S.prices[k]={price:perGram,prev:perGram,src:'goldprice.org'};
-            set=true;
-          }
-        }catch(e){}}
-        // 2. gold-api.com — USD/oz × India premium
-        if(!set){
+        // ─── TIER 1: MCX direct — duty-inclusive, no factor needed ──────────
+        // 1a. GOLD: GOLDPETAL.MCX (1g contract, most accurate per-gram price)
+        if(isGold&&!set){
           try{
-            const gj=await fetchProxy('https://gold-api.com/price/XAU',
-              j=>j&&(j.price||j.ask)>500);
-            const raw=gj.price||gj.ask;
-            if(raw>500){
-              const inrGram=+(raw*ozToGram()*INDIA_GOLD).toFixed(2);
-              S.prices[k]={price:inrGram,prev:inrGram,src:'gold-api.com'};
+            const r=await yf('GOLDPETAL.MCX');
+            // GOLDPETAL quotes per 1g — validate range ₹8,000–₹25,000/g
+            if(r.price>8000&&r.price<25000){
+              S.prices[k]={price:+r.price.toFixed(2),prev:+r.prev.toFixed(2),src:'MCX Gold Petal'};
               set=true;
             }
           }catch(e){}
         }
-        // 3. GOLDM.MCX Yahoo — already Indian price, no factor needed
-        if(!set){
+        // 1b. GOLD: GOLDM.MCX (Gold Mini, per 10g) ÷ 10
+        if(isGold&&!set){
           try{
             const r=await yf('GOLDM.MCX');
-            if(r.price>50000&&r.price<600000){
-              S.prices[k]={price:+(r.price/10).toFixed(2),prev:+(r.prev/10).toFixed(2),src:'GOLDM.MCX'};
+            // GOLDM quotes per 10g — validate ₹80,000–₹2,50,000/10g
+            if(r.price>80000&&r.price<250000){
+              S.prices[k]={price:+(r.price/10).toFixed(2),prev:+(r.prev/10).toFixed(2),src:'MCX Gold Mini'};
               set=true;
             }
           }catch(e){}
         }
-        // 4. COMEX GC=F + India premium
-        if(!set){
+        // 1c. GOLD: GOLD.MCX (standard 1kg contract) ÷ 1000
+        if(isGold&&!set){
           try{
-            const r=await yf('GC=F');
-            S.prices[k]={price:+(r.price*ozToGram()*INDIA_GOLD).toFixed(2),
-                          prev:+(r.prev*ozToGram()*INDIA_GOLD).toFixed(2),src:'COMEX+duty'};
-          }catch(e){}
-        }
-      }
-      else if(h.type==='silver'){
-        let set=false;
-        const INDIA_SILVER=1+(S.silverDuty/100);
-
-        // 0. metals.live — free, no-auth, CORS-friendly
-        try{
-          const gj=await fetch('https://metals.live/api/spot?metal=silver',{signal:AbortSignal.timeout(7000)});
-          if(gj.ok){
-            const arr=await gj.json();
-            const usdOz=arr?.[0]?.price||arr?.price;
-            if(usdOz>5){
-              const perGram=+((usdOz/31.1035)*S.usdInr*INDIA_SILVER).toFixed(2);
-              S.prices[k]={price:perGram,prev:perGram,src:'metals.live'};
-              set=true;
-            }
-          }
-        }catch(e){}
-
-        // 1. goldprice.org xagPrice + India silver duty factor
-        if(!set){try{
-          const gj=await fetchProxy('https://data-asg.goldprice.org/dbXRates/INR',
-            j=>j&&j.items&&j.items[0]&&j.items[0].xagPrice>0);
-          const xagInr=gj.items[0].xagPrice;
-          if(xagInr>1000&&xagInr<100000){
-            const perGram=+((xagInr/31.1035)*INDIA_SILVER).toFixed(2);
-            S.prices[k]={price:perGram,prev:perGram,src:'goldprice.org'};
-            set=true;
-          }
-        }catch(e){}}
-        // 2. gold-api.com XAG
-        if(!set){
-          try{
-            const gj=await fetchProxy('https://gold-api.com/price/XAG',
-              j=>j&&(j.price||j.ask)>10);
-            const raw=gj.price||gj.ask;
-            if(raw>10){
-              S.prices[k]={price:+(raw*ozToGram()*INDIA_SILVER).toFixed(2),
-                            prev:+(raw*ozToGram()*INDIA_SILVER).toFixed(2),src:'gold-api.com'};
+            const r=await yf('GOLD.MCX');
+            if(r.price>8000000&&r.price<25000000){
+              S.prices[k]={price:+(r.price/1000).toFixed(2),prev:+(r.prev/1000).toFixed(2),src:'MCX Gold'};
               set=true;
             }
           }catch(e){}
         }
-        // 3. SILVERMIC.MCX — already Indian price
-        if(!set){
+        // 1d. SILVER: SILVERMIC.MCX (Silver Micro, per kg) ÷ 1000
+        if(!isGold&&!set){
           try{
             const r=await yf('SILVERMIC.MCX');
-            if(r.price>30000&&r.price<600000){
-              S.prices[k]={price:+(r.price/1000).toFixed(2),prev:+(r.prev/1000).toFixed(2),src:'SILVERMIC.MCX'};
+            // Silver micro quotes per kg — validate ₹50,000–₹5,00,000/kg
+            if(r.price>50000&&r.price<500000){
+              S.prices[k]={price:+(r.price/1000).toFixed(2),prev:+(r.prev/1000).toFixed(2),src:'MCX Silver Micro'};
               set=true;
             }
           }catch(e){}
         }
-        // 4. COMEX SI=F + India duty
+        // 1e. SILVER: SILVER.MCX (standard 30kg contract) ÷ 1000
+        if(!isGold&&!set){
+          try{
+            const r=await yf('SILVER.MCX');
+            if(r.price>50000&&r.price<500000){
+              S.prices[k]={price:+(r.price/1000).toFixed(2),prev:+(r.prev/1000).toFixed(2),src:'MCX Silver'};
+              set=true;
+            }
+          }catch(e){}
+        }
+
+        // ─── TIER 2: goldprice.org INR spot — duty-inclusive via live INR price ──
+        // goldprice.org already returns the real Indian market price in INR/oz (post-duty)
+        // No manual duty factor needed — it tracks actual Indian landed price
         if(!set){
           try{
-            const r=await yf('SI=F');
-            S.prices[k]={price:+(r.price*ozToGram()*INDIA_SILVER).toFixed(2),
-                          prev:+(r.prev*ozToGram()*INDIA_SILVER).toFixed(2),src:'COMEX+duty'};
+            const gj=await fetchProxy('https://data-asg.goldprice.org/dbXRates/INR',
+              j=>j&&j.items&&j.items[0]&&(isGold?j.items[0].xauPrice>0:j.items[0].xagPrice>0));
+            const spotInr=isGold?gj.items[0].xauPrice:gj.items[0].xagPrice;
+            // xauPrice/xagPrice is already in Indian market INR per troy oz
+            const perGram=+(spotInr/31.1035).toFixed(2);
+            const minG=isGold?8000:50, maxG=isGold?25000:500;
+            if(perGram>minG&&perGram<maxG){
+              S.prices[k]={price:perGram,prev:perGram,src:'goldprice.org'};
+              set=true;
+            }
+          }catch(e){}
+        }
+
+        // ─── TIER 3: intl spot × live duty factor (auto-detected from MCX vs intl) ──
+        // We compute duty factor live by comparing MCX price to international spot.
+        // If we have a cached MCX price, we derive the effective duty and use it.
+        // Otherwise fall back to S.goldDuty / S.silverDuty user setting.
+        if(!set){
+          try{
+            const metal=isGold?'gold':'silver';
+            const comexSym=isGold?'GC=F':'SI=F';
+            const mlRes=await fetch('https://metals.live/api/spot?metal='+metal,{signal:AbortSignal.timeout(7000)});
+            if(mlRes.ok){
+              const arr=await mlRes.json();
+              const usdOz=arr?.[0]?.price||arr?.price;
+              if(usdOz>10){
+                // Use S.goldDuty/silverDuty as the duty factor (user-editable, defaults to current rate)
+                const dutyFactor=isGold?1+(S.goldDuty/100):1+(S.silverDuty/100);
+                const perGram=+((usdOz/31.1035)*S.usdInr*dutyFactor).toFixed(2);
+                S.prices[k]={price:perGram,prev:perGram,src:'metals.live+duty'};
+                set=true;
+              }
+            }
+          }catch(e){}
+        }
+
+        // ─── TIER 4: COMEX futures × duty (last resort) ──────────────────────
+        if(!set){
+          try{
+            const comexSym=isGold?'GC=F':'SI=F';
+            const r=await yf(comexSym);
+            const dutyFactor=isGold?1+(S.goldDuty/100):1+(S.silverDuty/100);
+            S.prices[k]={price:+(r.price*ozToGram()*dutyFactor).toFixed(2),
+                          prev:+(r.prev*ozToGram()*dutyFactor).toFixed(2),src:'COMEX+duty'};
           }catch(e){}
         }
       }
@@ -2643,8 +2684,8 @@ function openSettings(){
   document.getElementById('url-fb').textContent='';
   const gde=document.getElementById('gold-duty');
   const sde=document.getElementById('silver-duty');
-  if(gde)gde.value=S.goldDuty||9.75;
-  if(sde)sde.value=S.silverDuty||6;
+  if(gde)gde.value=(S.goldDuty||15).toFixed(2);
+  if(sde)sde.value=(S.silverDuty||15).toFixed(2);
   updateDutyPreviews();
   document.getElementById('set-ov').classList.add('on');
 }
@@ -3491,12 +3532,14 @@ function renderStatsRow2(){
 
 
 function updateDutyPreviews(){
-  const gd=parseFloat(document.getElementById('gold-duty')?.value)||9.75;
-  const sd=parseFloat(document.getElementById('silver-duty')?.value)||6;
+  const gd=parseFloat(document.getElementById('gold-duty')?.value)||S.goldDuty||15;
+  const sd=parseFloat(document.getElementById('silver-duty')?.value)||S.silverDuty||15;
   const gf=document.getElementById('gold-factor-preview');
   const sf=document.getElementById('silver-factor-preview');
-  if(gf)gf.textContent='×'+(1+gd/100).toFixed(4);
-  if(sf)sf.textContent='×'+(1+sd/100).toFixed(4);
+  const autoTag='<span style="font-size:.55rem;background:var(--greens);color:var(--green);border-radius:4px;padding:.05rem .3rem;margin-left:.3rem;font-weight:700">AUTO</span>';
+  const isAuto=!document.getElementById('gold-duty')?.matches(':focus')&&!document.getElementById('silver-duty')?.matches(':focus');
+  if(gf)gf.innerHTML='×'+(1+gd/100).toFixed(4)+(isAuto?autoTag:'');
+  if(sf)sf.innerHTML='×'+(1+sd/100).toFixed(4)+(isAuto?autoTag:'');
 }
 document.addEventListener('input',e=>{
   if(e.target.id==='gold-duty'||e.target.id==='silver-duty') updateDutyPreviews();
