@@ -1447,7 +1447,11 @@ async function fetchPrices(){
     gfPrices=await fetchGooglePrices(S.holdings);
   }
 
-  // ── Step 2: Client-side USD/INR fallback if Sheets didn't return it ───
+  // ── Step 2: Client-side USD/INR — try frankfurter.app first (no CORS/proxy needed) ──
+  try{
+    const fxr=await fetch('https://api.frankfurter.app/latest?from=USD&to=INR',{signal:AbortSignal.timeout(6000)});
+    if(fxr.ok){const fxj=await fxr.json();const r=fxj?.rates?.INR;if(r>50&&r<200)S.usdInr=r;}
+  }catch(e){}
   if(!(S.usdInr>50&&S.usdInr<200)){
     try{
       const fx=await yf('USDINR=X');
@@ -1473,14 +1477,26 @@ async function fetchPrices(){
       }
       else if(h.type==='gold'){
         let set=false;
-        // India gold premium factor: international spot × 1.0975 ≈ Indian MCX/IBJA rate
-        // Accounts for 10% import duty + 2.5% agri cess on gold imports
+        // India gold premium factor: international spot × duty factor ≈ Indian MCX/IBJA rate
         const INDIA_GOLD=1+(S.goldDuty/100);
-        const INDIA_SILVER=1+(S.silverDuty/100); // silver import duty ~6%
+        const INDIA_SILVER=1+(S.silverDuty/100);
+
+        // 0. metals.live — free, no-auth, CORS-friendly USD spot price
+        try{
+          const gj=await fetch('https://metals.live/api/spot?metal=gold',{signal:AbortSignal.timeout(7000)});
+          if(gj.ok){
+            const arr=await gj.json();
+            const usdOz=arr?.[0]?.price||arr?.price;
+            if(usdOz>500){
+              const perGram=+((usdOz/31.1035)*S.usdInr*INDIA_GOLD).toFixed(2);
+              S.prices[k]={price:perGram,prev:perGram,src:'metals.live'};
+              set=true;
+            }
+          }
+        }catch(e){}
 
         // 1. goldprice.org INR endpoint — gives forex-converted INR spot
-        //    Apply India premium factor to get actual Indian market price
-        try{
+        if(!set){try{
           const gj=await fetchProxy('https://data-asg.goldprice.org/dbXRates/INR',
             j=>j&&j.items&&j.items[0]&&j.items[0].xauPrice>0);
           const xauInr=gj.items[0].xauPrice;
@@ -1489,7 +1505,7 @@ async function fetchPrices(){
             S.prices[k]={price:perGram,prev:perGram,src:'goldprice.org'};
             set=true;
           }
-        }catch(e){}
+        }catch(e){}}
         // 2. gold-api.com — USD/oz × India premium
         if(!set){
           try{
@@ -1524,9 +1540,24 @@ async function fetchPrices(){
       }
       else if(h.type==='silver'){
         let set=false;
-        const INDIA_SILVER=1.06;
-        // 1. goldprice.org xagPrice + India silver duty factor
+        const INDIA_SILVER=1+(S.silverDuty/100);
+
+        // 0. metals.live — free, no-auth, CORS-friendly
         try{
+          const gj=await fetch('https://metals.live/api/spot?metal=silver',{signal:AbortSignal.timeout(7000)});
+          if(gj.ok){
+            const arr=await gj.json();
+            const usdOz=arr?.[0]?.price||arr?.price;
+            if(usdOz>5){
+              const perGram=+((usdOz/31.1035)*S.usdInr*INDIA_SILVER).toFixed(2);
+              S.prices[k]={price:perGram,prev:perGram,src:'metals.live'};
+              set=true;
+            }
+          }
+        }catch(e){}
+
+        // 1. goldprice.org xagPrice + India silver duty factor
+        if(!set){try{
           const gj=await fetchProxy('https://data-asg.goldprice.org/dbXRates/INR',
             j=>j&&j.items&&j.items[0]&&j.items[0].xagPrice>0);
           const xagInr=gj.items[0].xagPrice;
@@ -1535,7 +1566,7 @@ async function fetchPrices(){
             S.prices[k]={price:perGram,prev:perGram,src:'goldprice.org'};
             set=true;
           }
-        }catch(e){}
+        }catch(e){}}
         // 2. gold-api.com XAG
         if(!set){
           try{
@@ -1669,7 +1700,8 @@ function renderStats(){
 function mkHoldingCard(h,opts={}){
   const p=gp(h);const{a,p:pct}=upnl(h);
   const bd=h.type==='us'?`$${h.buyPrice.toFixed(2)}`:ri(h.buyPrice);
-  const liveP=h.type==='other'?(h.manualPrice!==null?ri(h.manualPrice):ri(h.buyPrice)):p?(h.type==='us'?`$${p.price.toFixed(2)}`:ri(p.price))+'<span style="font-size:.58rem;color:var(--t3);margin-left:.3rem">'+((p.src||'').includes('Google')?'GF':'YF')+'</span>':'—';
+  const isComm=h.type==='gold'||h.type==='silver';
+  const liveP=h.type==='other'?(h.manualPrice!==null?ri(h.manualPrice):ri(h.buyPrice)):p?(h.type==='us'?`$${p.price.toFixed(2)}`:ri(isComm?p.price*10:p.price))+'<span style="font-size:.58rem;color:var(--t3);margin-left:.3rem">'+(isComm?'/10g ':'')+'<span style="color:var(--green);font-size:.55rem">●</span> Live</span>':'—';
   let dc='—',dcCls='';
   if(p?.prev&&p.prev!==p.price){
     const chgAmt=p.price-p.prev;
@@ -2724,8 +2756,10 @@ function openDetail(id){
   document.getElementById('dh-name').textContent=h.name;
   document.getElementById('dh-meta').textContent=h.symbol+' · '+TL[h.type]+(h.notes?' · '+h.notes:'');
 
+  const isCommDetail=h.type==='gold'||h.type==='silver';
   if(p){
-    document.getElementById('dh-live').textContent=prefix+NF.format(p.price);
+    const dispPrice=isCommDetail?p.price*10:p.price;
+    document.getElementById('dh-live').textContent=prefix+NF.format(dispPrice)+(isCommDetail?' /10g':'');
     const dc=((p.price-p.prev)/p.prev)*100;
     const dce=document.getElementById('dh-chg');
     dce.textContent=(dc>=0?'▲ +':'▼ ')+Math.abs(dc).toFixed(2)+'% today';
