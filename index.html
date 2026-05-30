@@ -1098,8 +1098,7 @@ tbody td:first-child{padding-left:1.2rem}tbody td:last-child{padding-right:1.2re
       <div style="background:var(--s2);border:1.5px solid var(--b2);border-radius:14px;padding:1rem 1.1rem;margin-bottom:.85rem">
         <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--t3);margin-bottom:.6rem">Gold &amp; Silver Import Duty</div>
         <div style="font-size:.76rem;color:var(--t2);margin-bottom:.7rem;line-height:1.6">
-          <span style="color:var(--green);font-weight:700">●</span> <strong style="color:var(--t1)">MCX price is fetched first</strong> — duty is already baked in, no factor applied.<br>
-          This fallback is only used when MCX is unavailable. Current rate: <strong style="color:var(--t1)">15%</strong> (10% BCD + 5% AIDC, effective May 13 2026).
+          <span style="color:var(--green);font-weight:700">●</span> <strong style="color:var(--t1)">All duty is applied server-side</strong> — the Apps Script returns the correct Indian market price. These fields are not used.
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:.7rem">
           <div class="fg">
@@ -1141,51 +1140,6 @@ function doPost(e){
     for(var i=1;i<vals.length;i++){if(String(vals[i][0])===String(b.id)){
       b.action==='delete'?sh.deleteRow(i+1):sh.getRange(i+1,1,1,H.length).setValues([H.map(function(h){return b[h]!==undefined?b[h]:''})]);break;}}}
   return out({ok:true});
-}
-function getPrices(symbolsParam){
-  var symbols=symbolsParam.split('|').filter(function(s){return s.length>0});
-  var prices={},usdInr=84;
-  try{var fx=yahooQuote('USDINR=X');if(fx&&fx.price>50&&fx.price<200)usdInr=fx.price;}catch(e){}
-  var ozToGram=usdInr/31.1035;
-  var INDIA_GOLD=1.0975,INDIA_SILVER=1.06;
-  symbols.forEach(function(raw){
-    try{
-      var parts=raw.split(':'),type=parts[0].toLowerCase(),sym=parts[1]||'';
-      if(type==='mutual_fund'||type==='mf'){
-        var r=UrlFetchApp.fetch('https://api.mfapi.in/mf/'+sym,{muteHttpExceptions:true});
-        if(r.getResponseCode()===200){var j=JSON.parse(r.getContentText());
-          var n0=parseFloat(j.data[0].nav),n1=parseFloat((j.data[1]||j.data[0]).nav);
-          if(n0>0)prices[raw]={price:n0,prev:n1,src:'MFAPI'};}
-      } else if(type==='gold'){
-        var gp=null;
-        try{var gr=UrlFetchApp.fetch('https://data-asg.goldprice.org/dbXRates/INR',{muteHttpExceptions:true,headers:{'User-Agent':'Mozilla/5.0'}});
-          if(gr.getResponseCode()===200){var gj=JSON.parse(gr.getContentText());var xau=gj&&gj.items&&gj.items[0]&&gj.items[0].xauPrice;
-            if(xau&&xau>300000&&xau<700000)gp={price:Math.round(xau/31.1035*INDIA_GOLD*100)/100,prev:Math.round(xau/31.1035*INDIA_GOLD*100)/100,src:'goldprice.org'};}}catch(e){}
-        if(!gp){try{var gq=yahooQuote('GOLDM.MCX');if(gq&&gq.price>100000&&gq.price<400000)gp={price:Math.round(gq.price/10*100)/100,prev:Math.round(gq.prev/10*100)/100,src:'GOLDM.MCX'};}catch(e){}}
-        if(!gp){try{var gc=yahooQuote('GC=F');if(gc)gp={price:Math.round(gc.price*ozToGram*INDIA_GOLD*100)/100,prev:Math.round(gc.prev*ozToGram*INDIA_GOLD*100)/100,src:'COMEX'};}catch(e){}}
-        if(gp)prices[raw]=gp;
-      } else if(type==='silver'){
-        var sp=null;
-        try{var sr=UrlFetchApp.fetch('https://data-asg.goldprice.org/dbXRates/INR',{muteHttpExceptions:true,headers:{'User-Agent':'Mozilla/5.0'}});
-          if(sr.getResponseCode()===200){var sj=JSON.parse(sr.getContentText());var xag=sj&&sj.items&&sj.items[0]&&sj.items[0].xagPrice;
-            if(xag&&xag>2000&&xag<30000)sp={price:Math.round(xag/31.1035*INDIA_SILVER*100)/100,prev:Math.round(xag/31.1035*INDIA_SILVER*100)/100,src:'goldprice.org'};}}catch(e){}
-        if(!sp){try{var sq=yahooQuote('SILVERMIC.MCX');if(sq&&sq.price>60000&&sq.price<300000)sp={price:Math.round(sq.price/1000*100)/100,prev:Math.round(sq.prev/1000*100)/100,src:'SILVERMIC.MCX'};}catch(e){}}
-        if(!sp){try{var si=yahooQuote('SI=F');if(si)sp={price:Math.round(si.price*ozToGram*INDIA_SILVER*100)/100,prev:Math.round(si.prev*ozToGram*INDIA_SILVER*100)/100,src:'COMEX'};}catch(e){}}
-        if(sp)prices[raw]=sp;
-      } else if(type==='nse'){var q=yahooQuote(sym+'.NS');if(q)prices[raw]={price:q.price,prev:q.prev,src:'YF'};
-      } else if(type==='bse'){var q=yahooQuote(sym+'.BO');if(q)prices[raw]={price:q.price,prev:q.prev,src:'YF'};
-      } else if(type==='us'){var q=yahooQuote(sym);if(q)prices[raw]={price:q.price,prev:q.prev,src:'YF'};}
-    }catch(ex){}
-  });
-  return out({prices:prices,usdInr:usdInr});
-}
-function yahooQuote(symbol){
-  var url='https://query2.finance.yahoo.com/v7/finance/quote?symbols='+encodeURIComponent(symbol)+'&fields=regularMarketPrice,regularMarketPreviousClose';
-  var r=UrlFetchApp.fetch(url,{muteHttpExceptions:true,headers:{'User-Agent':'Mozilla/5.0','Accept':'application/json'}});
-  if(r.getResponseCode()!==200)return null;
-  var j=JSON.parse(r.getContentText()),res=j&&j.quoteResponse&&j.quoteResponse.result&&j.quoteResponse.result[0];
-  if(!res||!res.regularMarketPrice||res.regularMarketPrice<=0)return null;
-  return{price:res.regularMarketPrice,prev:res.regularMarketPreviousClose||res.regularMarketPrice};
 }
 function getSheet(){return SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET)||SpreadsheetApp.getActiveSpreadsheet().insertSheet(SHEET)}
 function out(o){var r=ContentService.createTextOutput(JSON.stringify(o));r.setMimeType(ContentService.MimeType.JSON);return r}</div>
@@ -2716,12 +2670,11 @@ async function loadDetailChart(h,range){
     if(!pairs.length)throw new Error('no data');
 
     // Conversion factor (MF NAV is already in ₹, no conversion needed)
-    const INDIA_GOLD=1+(S.goldDuty/100);
-    const INDIA_SILVER=1+(S.silverDuty/100);
+    // Duty already applied server-side by Apps Script
     const ozToGram=S.usdInr/31.1035;
     let f=1;
-    if(h.type==='gold')f=ozToGram*INDIA_GOLD;
-    else if(h.type==='silver')f=ozToGram*INDIA_SILVER;
+    if(h.type==='gold')f=1; // price already per gram from server
+    else if(h.type==='silver')f=1; // price already per gram from server
     else if(h.type==='us')f=S.usdInr;
 
     const labels=pairs.map(x=>x.t.toLocaleDateString('en-IN',{month:'short',day:'numeric'}));
@@ -2824,9 +2777,9 @@ async function loadKeyStats(h){
     // ── Gold / Silver: use COMEX GC=F / SI=F via v8 chart for 52W ──────────
     if(h.type==='gold'||h.type==='silver'){
       const comexSym=h.type==='gold'?'GC=F':'SI=F';
-      const DUTY=h.type==='gold'?1+(S.goldDuty/100):1+(S.silverDuty/100);
+      // 52W uses COMEX historical data, so we still need to convert USD/oz → INR/g with duty
       const ozToGram=S.usdInr/31.1035;
-      const f=ozToGram*DUTY;
+      const f=ozToGram*1.15*1.03; // 15% import duty + 3% IGST
       const j=await fetchProxy('https://query2.finance.yahoo.com/v8/finance/chart/'+encodeURIComponent(comexSym)+'?interval=1wk&range=1y');
       const closes=(j?.chart?.result?.[0]?.indicators?.quote?.[0]?.close||[]).filter(v=>v!=null);
       const high=closes.length?Math.max(...closes)*f:null;
@@ -3070,11 +3023,10 @@ async function buildPortfolioTimeline(holdings){
 
         const ts=result.timestamp||[];
         const closes=result.indicators?.quote?.[0]?.close||[];
-        const INDIA_GOLD=1+(S.goldDuty/100);
-        const INDIA_SILVER=1+(S.silverDuty/100);
+        // Duty applied server-side
         let f=1;
-        if(h.type==='gold') f=S.usdInr/31.1035*INDIA_GOLD;
-        else if(h.type==='silver') f=S.usdInr/31.1035*INDIA_SILVER;
+        if(h.type==='gold') f=1;
+        else if(h.type==='silver') f=1;
         else if(h.type==='us') f=S.usdInr;
 
         return{h, entries:ts.map((t,i)=>({
