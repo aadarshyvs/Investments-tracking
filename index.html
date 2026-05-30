@@ -1117,9 +1117,9 @@ tbody td:first-child{padding-left:1.2rem}tbody td:last-child{padding-right:1.2re
       <div class="setup-block">
         <div class="step-head"><div class="step-n">2</div>Extensions &rarr; Apps Script &rarr; paste this code</div>
         <div class="step-body">Replace everything with the script below &rarr; <strong>Ctrl+S</strong></div>
-        <div class="code-box" id="script-code">// PORTFOL.IO — Google Sheets Apps Script
-// Price source: goldprice.org (LBMA spot) + open.er-api.com (FX)
+        <div class="code-box" id="script-code">// PORTFOL.IO — Apps Script
 // Paste in Extensions → Apps Script → replace all → Save → Deploy
+// Source: goldprice.org (LBMA spot INR) · open.er-api.com (USD/INR)
 
 const SHEET='Holdings';
 const H=['id','name','type','symbol','units','buyPrice','buyDate','currency','notes','soldPrice','soldDate','soldNotes','status'];
@@ -1143,40 +1143,39 @@ function doPost(e){
 }
 
 function getPrices(symbolsParam){
-  var symbols=symbolsParam.split('|').filter(function(s){return s.length>0});
+  var symbols=symbolsParam.split('|').filter(function(s){return s.length&gt;0});
   var prices={};
   var OZ=31.1035;
 
-  // 1. USD/INR via open.er-api.com (free, no auth)
+  // USD/INR via open.er-api.com
   var usdInr=85.0;
-  try{
-    var fx=UrlFetchApp.fetch('https://open.er-api.com/v6/latest/USD',{muteHttpExceptions:true});
+  try{var fx=UrlFetchApp.fetch('https://open.er-api.com/v6/latest/USD',{muteHttpExceptions:true});
     if(fx.getResponseCode()===200){var fxJ=JSON.parse(fx.getContentText());
-      var r=fxJ&&fxJ.rates&&fxJ.rates.INR;if(r&&r>70&&r&lt;110)usdInr=r;}
+      var r=fxJ&amp;&amp;fxJ.rates&amp;&amp;fxJ.rates.INR;if(r&amp;&amp;r&gt;70&amp;&amp;r&lt;110)usdInr=r;}
   }catch(e){}
 
-  // 2. Gold &amp; Silver spot via goldprice.org (INR/troy-oz)
-  // Duty: BCD 6% + AIDC 5% + SWS 0.6% + IGST 3% + MCX/market premium
-  var DUTY=(1+0.06)*(1+0.05)*(1+0.006)*(1+0.03); // ~1.154
-  var MARKET_PREMIUM=1.36; // calibrated to current MCX basis
-  var GOLD_FACTOR=DUTY*MARKET_PREMIUM;
-  var SILVER_FACTOR=GOLD_FACTOR;
+  // Gold &amp; Silver: goldprice.org (LBMA spot already in INR/troy-oz)
+  // Indian retail = spot/OZ × DUTY_FACTOR
+  // Duties: BCD 6% + AIDC 5% + SWS 0.6% + IGST 3% → compounded ≈ 1.145
+  var DUTY=(1+0.06)*(1+0.05)*(1+0.006)*(1+0.03);
   var goldG=null,goldPG=null,silverG=null,silverPG=null;
   try{
     var gp=UrlFetchApp.fetch('https://data-asg.goldprice.org/dbXRates/INR',
       {muteHttpExceptions:true,headers:{'User-Agent':'Mozilla/5.0','Referer':'https://goldprice.org'}});
     if(gp.getResponseCode()===200){
-      var gpJ=JSON.parse(gp.getContentText()),item=gpJ&&gpJ.items&&gpJ.items[0];
+      var gpJ=JSON.parse(gp.getContentText()),item=gpJ&amp;&amp;gpJ.items&amp;&amp;gpJ.items[0];
       if(item){
         var xau=parseFloat(item.xauPrice);
-        if(xau>100000&&xau&lt;2000000){goldG=Math.round(xau/OZ*GOLD_FACTOR*100)/100;goldPG=goldG;}
+        if(xau&gt;100000&amp;&amp;xau&lt;2000000){goldG=Math.round(xau/OZ*DUTY*100)/100;goldPG=goldG;}
         var xag=parseFloat(item.xagPrice);
-        if(xag>500&&xag&lt;1000000){silverG=Math.round(xag/OZ*SILVER_FACTOR*100)/100;silverPG=silverG;}
+        if(xag&gt;500&amp;&amp;xag&lt;1000000){silverG=Math.round(xag/OZ*DUTY*100)/100;silverPG=silverG;}
       }
     }
   }catch(e){}
+  // Fallback: COMEX via Yahoo
+  if(!goldG){try{var gcQ=yq('GC=F');if(gcQ&amp;&amp;gcQ.price&gt;1000){goldG=Math.round(gcQ.price/OZ*usdInr*DUTY*100)/100;goldPG=Math.round(gcQ.prev/OZ*usdInr*DUTY*100)/100;}}catch(e){}}
+  if(!silverG){try{var siQ=yq('SI=F');if(siQ&amp;&amp;siQ.price&gt;5){silverG=Math.round(siQ.price/OZ*usdInr*DUTY*100)/100;silverPG=Math.round(siQ.prev/OZ*usdInr*DUTY*100)/100;}}catch(e){}}
 
-  // 3. Build price map
   symbols.forEach(function(raw){
     try{
       var parts=raw.split(':'),type=parts[0].toLowerCase(),sym=parts[1]||'';
@@ -1186,25 +1185,25 @@ function getPrices(symbolsParam){
         var mf=UrlFetchApp.fetch('https://api.mfapi.in/mf/'+sym,{muteHttpExceptions:true});
         if(mf.getResponseCode()===200){var mfJ=JSON.parse(mf.getContentText());
           var n0=parseFloat(mfJ.data[0].nav),n1=parseFloat((mfJ.data[1]||mfJ.data[0]).nav);
-          if(n0>0)prices[raw]={price:n0,prev:n1,src:'MFAPI'};}
+          if(n0&gt;0)prices[raw]={price:n0,prev:n1,src:'MFAPI'};}
       }
       else if(type==='nse'){var q=yq(sym+'.NS');if(q)prices[raw]={price:q.price,prev:q.prev,src:'YF-NSE'};}
       else if(type==='bse'){var q=yq(sym+'.BO');if(q)prices[raw]={price:q.price,prev:q.prev,src:'YF-BSE'};}
       else if(type==='us'){var q=yq(sym);if(q)prices[raw]={price:q.price,prev:q.prev,src:'YF-US'};}
     }catch(ex){}
   });
-  return out({prices:prices,usdInr:usdInr,goldFactor:GOLD_FACTOR,silverFactor:SILVER_FACTOR});
+  return out({prices:prices,usdInr:usdInr,goldFactor:DUTY,silverFactor:DUTY});
 }
 
 function yq(sym){
   var o={muteHttpExceptions:true,headers:{'User-Agent':'Mozilla/5.0','Accept':'application/json'}};
   try{var r=UrlFetchApp.fetch('https://query2.finance.yahoo.com/v7/finance/quote?symbols='+encodeURIComponent(sym)+'&amp;fields=regularMarketPrice,regularMarketPreviousClose',o);
-    if(r.getResponseCode()===200){var j=JSON.parse(r.getContentText()),q=j&&j.quoteResponse&&j.quoteResponse.result&&j.quoteResponse.result[0];
-      if(q&&q.regularMarketPrice>0)return{price:q.regularMarketPrice,prev:q.regularMarketPreviousClose||q.regularMarketPrice};}
+    if(r.getResponseCode()===200){var j=JSON.parse(r.getContentText()),q=j&amp;&amp;j.quoteResponse&amp;&amp;j.quoteResponse.result&amp;&amp;j.quoteResponse.result[0];
+      if(q&amp;&amp;q.regularMarketPrice&gt;0)return{price:q.regularMarketPrice,prev:q.regularMarketPreviousClose||q.regularMarketPrice};}
   }catch(e){}
   try{var r8=UrlFetchApp.fetch('https://query2.finance.yahoo.com/v8/finance/chart/'+encodeURIComponent(sym)+'?interval=1d&amp;range=5d',o);
-    if(r8.getResponseCode()===200){var j8=JSON.parse(r8.getContentText()),m=j8&&j8.chart&&j8.chart.result&&j8.chart.result[0]&&j8.chart.result[0].meta;
-      if(m&&m.regularMarketPrice>0)return{price:m.regularMarketPrice,prev:m.previousClose||m.regularMarketPrice};}
+    if(r8.getResponseCode()===200){var j8=JSON.parse(r8.getContentText()),m=j8&amp;&amp;j8.chart&amp;&amp;j8.chart.result&amp;&amp;j8.chart.result[0]&amp;&amp;j8.chart.result[0].meta;
+      if(m&amp;&amp;m.regularMarketPrice&gt;0)return{price:m.regularMarketPrice,prev:m.previousClose||m.regularMarketPrice};}
   }catch(e){}
   return null;
 }
@@ -1311,7 +1310,7 @@ function authInit(){
 /* ═══════════════════════════════════
    THEME
 ═══════════════════════════════════ */
-const S={holdings:[],sold:[],prices:{},usdInr:85,goldFactor:1.57,silverFactor:1.57,url:localStorage.getItem('pf_url')||'',filter:'all',editId:null,sellingId:null,page:'dashboard',charts:{},
+const S={holdings:[],sold:[],prices:{},usdInr:85,goldFactor:1.145,silverFactor:1.145,url:localStorage.getItem('pf_url')||'',filter:'all',editId:null,sellingId:null,page:'dashboard',charts:{},
   theme:matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'};
 
 function applyTheme(t){
@@ -1439,8 +1438,8 @@ async function fetchGooglePrices(holdings){
 async function fetchCommodityPricesDirect(){
   const OZ = 31.1035;
   // Same statutory duty + market premium factor as the Apps Script
-  // Gold/silver: BCD 6% + AIDC 5% + SWS 0.6% + IGST 3% + MCX premium ≈ ×1.57
-  const FACTOR = S.goldFactor || 1.57;
+  // Gold/silver: BCD 6% + AIDC 5% + SWS 0.6% + IGST 3% → compounded ≈ 1.145
+  const FACTOR = S.goldFactor || 1.145;
   try {
     const url = 'https://data-asg.goldprice.org/dbXRates/INR';
     const proxies = [
