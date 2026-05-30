@@ -1344,26 +1344,7 @@ async function syncRow(action,h){saveLocal();if(!S.url)return;try{await fetch(S.
 ═══════════════════════════════════ */
 
 // ── PRICE ENGINE ────────────────────────────────────────────────────────
-// ── gold-api.com: free, no auth, CORS-open ───────────────────────────────
-// Returns USD/oz spot for XAU and XAG
-async function goldApiCom(metal){
-  // metal = 'XAU' or 'XAG'
-  const r=await fetch(`https://gold-api.com/price/${metal}`,{signal:AbortSignal.timeout(8000)});
-  if(!r.ok) throw new Error('gold-api.com '+r.status);
-  const j=await r.json();
-  const p=j.price||j.ask;
-  if(!p||p<=0) throw new Error('gold-api.com bad price');
-  return p; // USD per troy oz
-}
-
-// ── goldprice.org: CORS-open, returns INR spot ───────────────────────────
-async function goldpriceOrg(){
-  const r=await fetch('https://data-asg.goldprice.org/dbXRates/INR',{signal:AbortSignal.timeout(8000)});
-  if(!r.ok) throw new Error('goldprice.org '+r.status);
-  const j=await r.json();
-  if(!j?.items?.[0]) throw new Error('goldprice.org bad data');
-  return j.items[0]; // {xauPrice, xagPrice} in INR per troy oz
-}
+// Gold/silver prices fetched server-side via Google Sheets Apps Script
 
 // ── Minimal proxy for chart/history fetches (non-Yahoo URLs only) ─────────
 async function fetchProxy(url, isValid){
@@ -1428,52 +1409,9 @@ async function fetchGooglePrices(holdings){
   }
 }
 
-// ── Live duty auto-detection: compare goldprice.org INR vs gold-api.com USD ──
-// goldprice.org gives Indian landed price; gold-api.com gives international USD.
-// The ratio tells us the effective duty being applied by the market.
-async function detectLiveDuty(){
-  try{
-    const [gpRes, gaRes, fxRes] = await Promise.allSettled([
-      goldpriceOrg(),     // INR/oz — Indian landed price
-      goldApiCom('XAU'),  // USD/oz — international spot
-      fetch('https://open.er-api.com/v6/latest/USD',{signal:AbortSignal.timeout(6000)})
-    ]);
 
-    let usdInr = S.usdInr;
-    if(fxRes.status==='fulfilled'&&fxRes.value.ok){
-      const fxj=await fxRes.value.json();
-      if(fxj?.rates?.INR>70) usdInr=fxj.rates.INR;
-    }
-
-    if(gpRes.status==='fulfilled'&&gaRes.status==='fulfilled'){
-      const indianInrOz = gpRes.value.xauPrice;  // Indian market ₹/oz
-      const intlUsdOz   = gaRes.value;            // International USD/oz
-      const intlInrOz   = intlUsdOz * usdInr;    // International ₹/oz
-
-      if(indianInrOz>50000 && intlInrOz>50000){
-        const effectiveDuty = ((indianInrOz / intlInrOz) - 1) * 100;
-        if(effectiveDuty>0 && effectiveDuty<50){
-          const rounded = Math.round(effectiveDuty * 4) / 4;
-          S.goldDuty = rounded;
-          S.silverDuty = rounded;
-          localStorage.setItem('pf_gold_duty', rounded);
-          localStorage.setItem('pf_silver_duty', rounded);
-          console.log(`[Duty] Auto-detected: ${rounded.toFixed(2)}% (₹${indianInrOz.toFixed(0)} vs $${intlUsdOz.toFixed(0)}×${usdInr.toFixed(1)}=₹${intlInrOz.toFixed(0)} /oz)`);
-          updateDutyPreviews();
-        }
-      }
-    }
-  }catch(e){
-    console.warn('[Duty] Auto-detect failed:', e.message);
-  }
-}
-
-// ── Main fetchPrices orchestrator ─────────────────────────────────────────
 async function fetchPrices(){
   const ozToGram=()=>S.usdInr/31.1035;
-
-  // ── Step 0: Auto-detect live duty rate from MCX vs COMEX spread ───────
-  detectLiveDuty(); // fire-and-forget; updates S.goldDuty/silverDuty in background
 
   // ── Step 1: Google Sheets (server-side Yahoo — no CORS, most reliable) ─
   let gfPrices={};
@@ -1481,11 +1419,8 @@ async function fetchPrices(){
     gfPrices=await fetchGooglePrices(S.holdings);
   }
 
-  // ── Step 2: USD/INR — open.er-api.com (free, CORS-open, no auth) ─────────
-  try{
-    const r=await fetch('https://open.er-api.com/v6/latest/USD',{signal:AbortSignal.timeout(7000)});
-    if(r.ok){const j=await r.json();if(j?.rates?.INR>70&&j.rates.INR<120)S.usdInr=j.rates.INR;}
-  }catch(e){console.warn('[FX] USD/INR fetch failed, using default',S.usdInr);}
+  // ── Step 2: USD/INR — comes from Google Sheets response (j.usdInr) ────────
+  // Already set in fetchGooglePrices above. S.usdInr default is 85.
 
   // ── Step 3: Per-holding — use Sheets result or fall back to client Yahoo ──
   await Promise.allSettled(S.holdings.map(async h=>{
@@ -1499,46 +1434,12 @@ async function fetchPrices(){
         return;
       }
 
-      // Client-side Yahoo fallback
+      // All prices come from Google Sheets Apps Script (server-side, no CORS issues)
+      // Mutual funds have a direct MFAPI fallback
       if(h.type==='mutual_fund'){
         S.prices[k]=await mfp(h.symbol);
-      }
-      else if(h.type==='gold'||h.type==='silver'){
-        const isGold=h.type==='gold';
-        const dutyFactor=isGold?1+(S.goldDuty/100):1+(S.silverDuty/100);
-        let set=false;
-
-        // ── SOURCE 1: goldprice.org — CORS-open, returns real INR market price ──
-        // xauPrice / xagPrice = INR per troy oz (already reflects Indian landed price)
-        if(!set){
-          try{
-            const spot=await goldpriceOrg();
-            const inrOz=isGold?spot.xauPrice:spot.xagPrice;
-            if(inrOz>10000){
-              const perGram=+(inrOz/31.1035).toFixed(2);
-              S.prices[k]={price:perGram,prev:perGram,src:'goldprice.org'};
-              set=true;
-            }
-          }catch(e){}
-        }
-
-        // ── SOURCE 2: gold-api.com — CORS-open, USD/oz, apply duty factor ────
-        if(!set){
-          try{
-            const usdOz=await goldApiCom(isGold?'XAU':'XAG');
-            const perGram=+((usdOz/31.1035)*S.usdInr*dutyFactor).toFixed(2);
-            if(perGram>1000){
-              S.prices[k]={price:perGram,prev:perGram,src:'gold-api.com'};
-              set=true;
-            }
-          }catch(e){}
-        }
-
-        if(!set) console.warn('[metals] All sources failed for',h.type);
-      }
-      else{
-        // Stocks — no reliable CORS-open source without Google Sheets configured
-        if(!S.url) console.warn('[stocks] Google Sheets URL not set — cannot fetch',h.symbol);
+      } else {
+        console.warn('[price] No Google Sheets URL set — cannot fetch',h.type,h.symbol);
       }
     }catch(e){
       console.warn(`[${h.type}] ${h.symbol} price failed:`,e.message);
