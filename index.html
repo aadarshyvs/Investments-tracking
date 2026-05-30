@@ -1344,12 +1344,54 @@ async function syncRow(action,h){saveLocal();if(!S.url)return;try{await fetch(S.
 ═══════════════════════════════════ */
 
 // ── PRICE ENGINE ────────────────────────────────────────────────────────
+// ── Stooq symbol mapping ─────────────────────────────────────────────────
+// Stooq is CORS-open, free, no auth. Covers NSE (.NS→.IN), BSE (.BO→.BO in stooq), MCX, US, FOREX
+function toStooq(sym){
+  // Stooq uses: .ns (NSE India), .bo (BSE India), no suffix for US
+  // MCX symbols: GOLDM.MCX → goldm.mcx, GOLDPETAL.MCX → goldpetal.mcx etc.
+  if(sym.endsWith('.MCX')) return sym.toLowerCase();   // stooq supports .mcx directly
+  if(sym.endsWith('.NS'))  return sym.replace('.NS','.ns');  // NSE
+  if(sym.endsWith('.BO'))  return sym.replace('.BO','.bo');  // BSE
+  if(sym==='GC=F')         return 'gc.f';   // COMEX Gold
+  if(sym==='SI=F')         return 'si.f';   // COMEX Silver
+  if(sym==='USDINR=X')     return 'usd/inr';
+  return sym.toLowerCase();
+}
+
+// Parse Stooq CSV: Date,Open,High,Low,Close,Volume
+function parseStooqCSV(csv){
+  const lines=csv.trim().split('
+');
+  if(lines.length<2) return null;
+  // Find last two data rows (most recent first after header)
+  const rows=lines.slice(1).filter(l=>l.trim()).reverse();
+  if(!rows[0]) return null;
+  const today=rows[0].split(',');
+  const prev=rows[1]?rows[1].split(','):today;
+  const close=parseFloat(today[4]);
+  const prevClose=parseFloat(prev[4]);
+  if(!close||close<=0) return null;
+  return{price:close,prev:prevClose||close};
+}
+
+async function stooq(sym){
+  const s=toStooq(sym);
+  const url=`https://stooq.com/q/d/l/?s=${encodeURIComponent(s)}&i=d`;
+  const r=await fetch(url,{signal:AbortSignal.timeout(10000)});
+  if(!r.ok) throw new Error('Stooq HTTP '+r.status);
+  const csv=await r.text();
+  if(!csv||csv.includes('No data')||csv[0]==='<') throw new Error('Stooq no data for '+s);
+  const parsed=parseStooqCSV(csv);
+  if(!parsed) throw new Error('Stooq parse fail for '+s);
+  return{...parsed,currency:'INR',src:'Stooq'};
+}
+
+// Proxy list — for APIs that need CORS wrapping (goldprice.org etc.)
 const PX=[
   u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
   u=>`https://corsproxy.io/?url=${encodeURIComponent(u)}`,
   u=>`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
   u=>`https://thingproxy.freeboard.io/fetch/${u}`,
-  u=>`https://cors-anywhere.herokuapp.com/${u}`,
 ];
 
 async function fetchProxy(url, isValid){
@@ -1368,40 +1410,21 @@ async function fetchProxy(url, isValid){
   throw new Error('All proxies failed');
 }
 
-// ── Layer 2: Yahoo Finance v7 (try direct, then via proxy) ───────────────
-async function yfV7(sym){
-  const url=`https://query2.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(sym)}&fields=regularMarketPrice,regularMarketPreviousClose,currency`;
-  const isValid=j=>{
-    const r=j?.quoteResponse?.result?.[0];
-    return r&&typeof r.regularMarketPrice==='number'&&r.regularMarketPrice>0;
-  };
-  // Try direct first (works in some environments)
-  try{
-    const r=await fetch(url,{signal:AbortSignal.timeout(6000)});
-    if(r.ok){const t=await r.text();const j=JSON.parse(t);if(isValid(j)){const q=j.quoteResponse.result[0];return{price:q.regularMarketPrice,prev:q.regularMarketPreviousClose||q.regularMarketPrice,currency:q.currency||'INR',src:'YFv7-direct'}}}
-  }catch(e){}
-  // Fall back to proxies
+// ── yf: Stooq first, Yahoo v7/v8 via proxy as fallback ───────────────────
+async function yfV7proxy(sym){
+  const url=`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(sym)}&fields=regularMarketPrice,regularMarketPreviousClose,currency&crumb=`;
+  const isValid=j=>{const r=j?.quoteResponse?.result?.[0];return r&&typeof r.regularMarketPrice==='number'&&r.regularMarketPrice>0};
   const j=await fetchProxy(url,isValid);
   const q=j.quoteResponse.result[0];
-  return{price:q.regularMarketPrice,prev:q.regularMarketPreviousClose||q.regularMarketPrice,currency:q.currency||'INR',src:'YFv7-proxy'};
-}
-
-async function yfV8(sym){
-  const url=`https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=5d`;
-  const isValid=j=>{const m=j?.chart?.result?.[0]?.meta;return m&&typeof m.regularMarketPrice==='number'&&m.regularMarketPrice>0};
-  // Try direct first
-  try{
-    const r=await fetch(url,{signal:AbortSignal.timeout(7000)});
-    if(r.ok){const t=await r.text();const j=JSON.parse(t);if(isValid(j)){const m=j.chart.result[0].meta;return{price:m.regularMarketPrice,prev:m.previousClose||m.chartPreviousClose||m.regularMarketPrice,currency:m.currency||'INR',src:'YFv8-direct'}}}
-  }catch(e){}
-  const j=await fetchProxy(url,isValid);
-  const m=j.chart.result[0].meta;
-  return{price:m.regularMarketPrice,prev:m.previousClose||m.chartPreviousClose||m.regularMarketPrice,currency:m.currency||'INR',src:'YFv8'};
+  return{price:q.regularMarketPrice,prev:q.regularMarketPreviousClose||q.regularMarketPrice,currency:q.currency||'INR',src:'YF-proxy'};
 }
 
 async function yf(sym){
-  try{return await yfV7(sym)}catch(e){}
-  return await yfV8(sym);
+  // 1. Try Stooq — direct, no CORS issues
+  try{return await stooq(sym)}catch(e){}
+  // 2. Try Yahoo via proxy
+  try{return await yfV7proxy(sym)}catch(e){}
+  throw new Error('All quote sources failed for '+sym);
 }
 
 // ── MFAPI: direct, official NAV, no proxy needed ─────────────────────────
@@ -1498,16 +1521,16 @@ async function fetchPrices(){
     gfPrices=await fetchGooglePrices(S.holdings);
   }
 
-  // ── Step 2: Client-side USD/INR — try frankfurter.app first (no CORS/proxy needed) ──
-  try{
-    const fxr=await fetch('https://api.frankfurter.app/latest?from=USD&to=INR',{signal:AbortSignal.timeout(6000)});
-    if(fxr.ok){const fxj=await fxr.json();const r=fxj?.rates?.INR;if(r>50&&r<200)S.usdInr=r;}
-  }catch(e){}
-  if(!(S.usdInr>50&&S.usdInr<200)){
-    try{
-      const fx=await yf('USDINR=X');
-      if(fx.price>50&&fx.price<200) S.usdInr=fx.price;
-    }catch(e){}
+  // ── Step 2: USD/INR — multiple CORS-open sources in parallel ────────────
+  if(!(S.usdInr>82&&S.usdInr<100)){
+    const fxSources=[
+      async()=>{const r=await fetch('https://api.frankfurter.app/latest?from=USD&to=INR',{signal:AbortSignal.timeout(6000)});const j=await r.json();return j.rates.INR;},
+      async()=>{const r=await fetch('https://open.er-api.com/v6/latest/USD',{signal:AbortSignal.timeout(6000)});const j=await r.json();return j.rates.INR;},
+      async()=>{const d=await stooq('USDINR=X');return d.price;},
+    ];
+    for(const src of fxSources){
+      try{const r=await src();if(r>70&&r<120){S.usdInr=r;break;}}catch(e){}
+    }
   }
 
   // ── Step 3: Per-holding — use Sheets result or fall back to client Yahoo ──
@@ -1588,17 +1611,22 @@ async function fetchPrices(){
           }catch(e){}
         }
 
-        // ─── TIER 2: goldprice.org INR spot — duty-inclusive via live INR price ──
-        // goldprice.org already returns the real Indian market price in INR/oz (post-duty)
-        // No manual duty factor needed — it tracks actual Indian landed price
+        // ─── TIER 2: goldprice.org INR — try direct first (CORS-open), then proxy ──
         if(!set){
           try{
-            const gj=await fetchProxy('https://data-asg.goldprice.org/dbXRates/INR',
-              j=>j&&j.items&&j.items[0]&&(isGold?j.items[0].xauPrice>0:j.items[0].xagPrice>0));
+            const gpUrl='https://data-asg.goldprice.org/dbXRates/INR';
+            const isValidGP=j=>j&&j.items&&j.items[0]&&(isGold?j.items[0].xauPrice>0:j.items[0].xagPrice>0);
+            let gj=null;
+            // Try direct (goldprice.org allows CORS)
+            try{
+              const r=await fetch(gpUrl,{signal:AbortSignal.timeout(8000)});
+              if(r.ok){const t=await r.text();const p=JSON.parse(t);if(isValidGP(p))gj=p;}
+            }catch(e){}
+            // Fallback to proxy
+            if(!gj) gj=await fetchProxy(gpUrl,isValidGP);
             const spotInr=isGold?gj.items[0].xauPrice:gj.items[0].xagPrice;
-            // xauPrice/xagPrice is already in Indian market INR per troy oz
             const perGram=+(spotInr/31.1035).toFixed(2);
-            const minG=isGold?8000:50, maxG=isGold?25000:500;
+            const minG=isGold?8000:50, maxG=isGold?25000:1000;
             if(perGram>minG&&perGram<maxG){
               S.prices[k]={price:perGram,prev:perGram,src:'goldprice.org'};
               set=true;
@@ -1606,27 +1634,40 @@ async function fetchPrices(){
           }catch(e){}
         }
 
-        // ─── TIER 3: intl spot × live duty factor (auto-detected from MCX vs intl) ──
-        // We compute duty factor live by comparing MCX price to international spot.
-        // If we have a cached MCX price, we derive the effective duty and use it.
-        // Otherwise fall back to S.goldDuty / S.silverDuty user setting.
+        // ─── TIER 3: multiple direct USD spot APIs × live duty factor ─────────────
         if(!set){
-          try{
-            const metal=isGold?'gold':'silver';
-            const comexSym=isGold?'GC=F':'SI=F';
-            const mlRes=await fetch('https://metals.live/api/spot?metal='+metal,{signal:AbortSignal.timeout(7000)});
-            if(mlRes.ok){
-              const arr=await mlRes.json();
-              const usdOz=arr?.[0]?.price||arr?.price;
-              if(usdOz>10){
-                // Use S.goldDuty/silverDuty as the duty factor (user-editable, defaults to current rate)
-                const dutyFactor=isGold?1+(S.goldDuty/100):1+(S.silverDuty/100);
-                const perGram=+((usdOz/31.1035)*S.usdInr*dutyFactor).toFixed(2);
-                S.prices[k]={price:perGram,prev:perGram,src:'metals.live+duty'};
+          const dutyFactor=isGold?1+(S.goldDuty/100):1+(S.silverDuty/100);
+          const spotSources=[
+            // metals.live — free CORS-open
+            async()=>{
+              const r=await fetch('https://metals.live/api/spot?metal='+(isGold?'gold':'silver'),{signal:AbortSignal.timeout(7000)});
+              if(!r.ok)throw new Error();
+              const a=await r.json();
+              const p=a?.[0]?.price||a?.price;
+              if(!p||p<1)throw new Error();
+              return p;
+            },
+            // Stooq COMEX futures (GC.F / SI.F) — already tried via stooq() above but USD
+            async()=>{
+              const s=isGold?'gc.f':'si.f';
+              const r=await fetch(`https://stooq.com/q/d/l/?s=${s}&i=d`,{signal:AbortSignal.timeout(8000)});
+              const csv=await r.text();
+              const parsed=parseStooqCSV(csv);
+              if(!parsed||parsed.price<10)throw new Error();
+              return parsed.price; // USD/oz
+            },
+          ];
+          for(const src of spotSources){
+            if(set)break;
+            try{
+              const usdOz=await src();
+              const perGram=+((usdOz/31.1035)*S.usdInr*dutyFactor).toFixed(2);
+              if(perGram>1000){
+                S.prices[k]={price:perGram,prev:perGram,src:'intl+duty'};
                 set=true;
               }
-            }
-          }catch(e){}
+            }catch(e){}
+          }
         }
 
         // ─── TIER 4: COMEX futures × duty (last resort) ──────────────────────
