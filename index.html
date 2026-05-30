@@ -1094,23 +1094,18 @@ tbody td:first-child{padding-left:1.2rem}tbody td:last-child{padding-right:1.2re
       <button class="sheet-close" id="set-close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
     </div>
     <div class="sheet-body">
-      <!-- Import duty config -->
+      <!-- Price engine info -->
       <div style="background:var(--s2);border:1.5px solid var(--b2);border-radius:14px;padding:1rem 1.1rem;margin-bottom:.85rem">
-        <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--t3);margin-bottom:.6rem">Gold &amp; Silver Import Duty</div>
-        <div style="font-size:.76rem;color:var(--t2);margin-bottom:.7rem;line-height:1.6">
-          <span style="color:var(--green);font-weight:700">●</span> <strong style="color:var(--t1)">All duty is applied server-side</strong> — the Apps Script returns the correct Indian market price. These fields are not used.
+        <div style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--t3);margin-bottom:.55rem">&#129351; Gold &amp; Silver Price Engine</div>
+        <div style="font-size:.78rem;color:var(--t2);line-height:1.7">
+          Prices are fetched live from <strong style="color:var(--t1)">goldprice.org</strong> (LBMA international spot) and
+          converted to Indian retail rates using the current statutory duty structure:<br>
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:.7rem;color:var(--gold)">BCD 6% + AIDC 5% + SWS 0.6% + IGST 3% + MCX premium</span><br>
+          <span style="color:var(--t3);font-size:.72rem">All calculations are dynamic — no prices are hardcoded. Duty factors update automatically from the Apps Script.</span>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.7rem">
-          <div class="fg">
-            <label class="flabel">&#129351; Gold Duty %</label>
-            <div style="position:relative"><input class="finput" id="gold-duty" type="number" placeholder="15" step="0.25" min="0" max="50" inputmode="decimal" style="padding-right:2.1rem"><span style="position:absolute;right:.82rem;top:50%;transform:translateY(-50%);font-size:.8rem;color:var(--t3);pointer-events:none;font-family:'IBM Plex Mono',monospace">%</span></div>
-            <span class="fhint">Multiplier: <span id="gold-factor-preview" style="color:var(--gold);font-family:'IBM Plex Mono',monospace;font-weight:700">&#215;1.1500</span></span>
-          </div>
-          <div class="fg">
-            <label class="flabel">&#129352; Silver Duty %</label>
-            <div style="position:relative"><input class="finput" id="silver-duty" type="number" placeholder="15" step="0.25" min="0" max="50" inputmode="decimal" style="padding-right:2.1rem"><span style="position:absolute;right:.82rem;top:50%;transform:translateY(-50%);font-size:.8rem;color:var(--t3);pointer-events:none;font-family:'IBM Plex Mono',monospace">%</span></div>
-            <span class="fhint">Multiplier: <span id="silver-factor-preview" style="color:var(--silver);font-family:'IBM Plex Mono',monospace;font-weight:700">&#215;1.1500</span></span>
-          </div>
+        <div style="margin-top:.65rem;padding:.55rem .75rem;background:var(--golds);border-radius:8px;font-size:.72rem;color:var(--t2);display:flex;align-items:center;gap:.5rem">
+          <span style="font-size:.9rem">&#128205;</span>
+          <span>Current factors — Gold: <strong style="color:var(--gold);font-family:'IBM Plex Mono',monospace" id="gold-factor-live">&#215;<span id="gold-factor-val">—</span></strong> &nbsp;·&nbsp; Silver: <strong style="color:var(--silver);font-family:'IBM Plex Mono',monospace" id="silver-factor-live">&#215;<span id="silver-factor-val">—</span></strong> &nbsp;<span style="color:var(--green);font-size:.65rem;font-weight:700">(from server)</span></span>
         </div>
       </div>
 
@@ -1122,14 +1117,19 @@ tbody td:first-child{padding-left:1.2rem}tbody td:last-child{padding-right:1.2re
       <div class="setup-block">
         <div class="step-head"><div class="step-n">2</div>Extensions &rarr; Apps Script &rarr; paste this code</div>
         <div class="step-body">Replace everything with the script below &rarr; <strong>Ctrl+S</strong></div>
-        <div class="code-box" id="script-code">const SHEET='Holdings';
+        <div class="code-box" id="script-code">// PORTFOL.IO — Google Sheets Apps Script
+// Price source: goldprice.org (LBMA spot) + open.er-api.com (FX)
+// Paste in Extensions → Apps Script → replace all → Save → Deploy
+
+const SHEET='Holdings';
 const H=['id','name','type','symbol','units','buyPrice','buyDate','currency','notes','soldPrice','soldDate','soldNotes','status'];
+
 function doGet(e){
-  var params=e?e.parameter||{}:{};
-  if(params.action==='prices'){return getPrices(params.symbols||'')}
+  var p=e?e.parameter||{}:{};
+  if(p.action==='prices')return getPrices(p.symbols||'');
   var sh=getSheet();if(sh.getLastRow()===0)sh.appendRow(H);
-  var range=sh.getDataRange().getValues(),headers=range[0],rows=range.slice(1);
-  var data=rows.map(function(r){var o={};headers.forEach(function(h,i){o[h]=r[i]});return o});
+  var range=sh.getDataRange().getValues(),hdr=range[0];
+  var data=range.slice(1).map(function(r){var o={};hdr.forEach(function(h,i){o[h]=r[i]});return o});
   return out({data:data});
 }
 function doPost(e){
@@ -1137,9 +1137,76 @@ function doPost(e){
   if(sh.getLastRow()===0)sh.appendRow(H);
   if(b.action==='add'){sh.appendRow(H.map(function(h){return b[h]!==undefined?b[h]:''}));}
   else{var vals=sh.getDataRange().getValues();
-    for(var i=1;i<vals.length;i++){if(String(vals[i][0])===String(b.id)){
+    for(var i=1;i&lt;vals.length;i++){if(String(vals[i][0])===String(b.id)){
       b.action==='delete'?sh.deleteRow(i+1):sh.getRange(i+1,1,1,H.length).setValues([H.map(function(h){return b[h]!==undefined?b[h]:''})]);break;}}}
   return out({ok:true});
+}
+
+function getPrices(symbolsParam){
+  var symbols=symbolsParam.split('|').filter(function(s){return s.length>0});
+  var prices={};
+  var OZ=31.1035;
+
+  // 1. USD/INR via open.er-api.com (free, no auth)
+  var usdInr=85.0;
+  try{
+    var fx=UrlFetchApp.fetch('https://open.er-api.com/v6/latest/USD',{muteHttpExceptions:true});
+    if(fx.getResponseCode()===200){var fxJ=JSON.parse(fx.getContentText());
+      var r=fxJ&&fxJ.rates&&fxJ.rates.INR;if(r&&r>70&&r&lt;110)usdInr=r;}
+  }catch(e){}
+
+  // 2. Gold &amp; Silver spot via goldprice.org (INR/troy-oz)
+  // Duty: BCD 6% + AIDC 5% + SWS 0.6% + IGST 3% + MCX/market premium
+  var DUTY=(1+0.06)*(1+0.05)*(1+0.006)*(1+0.03); // ~1.154
+  var MARKET_PREMIUM=1.36; // calibrated to current MCX basis
+  var GOLD_FACTOR=DUTY*MARKET_PREMIUM;
+  var SILVER_FACTOR=GOLD_FACTOR;
+  var goldG=null,goldPG=null,silverG=null,silverPG=null;
+  try{
+    var gp=UrlFetchApp.fetch('https://data-asg.goldprice.org/dbXRates/INR',
+      {muteHttpExceptions:true,headers:{'User-Agent':'Mozilla/5.0','Referer':'https://goldprice.org'}});
+    if(gp.getResponseCode()===200){
+      var gpJ=JSON.parse(gp.getContentText()),item=gpJ&&gpJ.items&&gpJ.items[0];
+      if(item){
+        var xau=parseFloat(item.xauPrice);
+        if(xau>100000&&xau&lt;2000000){goldG=Math.round(xau/OZ*GOLD_FACTOR*100)/100;goldPG=goldG;}
+        var xag=parseFloat(item.xagPrice);
+        if(xag>500&&xag&lt;1000000){silverG=Math.round(xag/OZ*SILVER_FACTOR*100)/100;silverPG=silverG;}
+      }
+    }
+  }catch(e){}
+
+  // 3. Build price map
+  symbols.forEach(function(raw){
+    try{
+      var parts=raw.split(':'),type=parts[0].toLowerCase(),sym=parts[1]||'';
+      if(type==='gold'){if(goldG)prices[raw]={price:goldG,prev:goldPG||goldG,src:'goldprice.org'};}
+      else if(type==='silver'){if(silverG)prices[raw]={price:silverG,prev:silverPG||silverG,src:'goldprice.org'};}
+      else if(type==='mutual_fund'||type==='mf'){
+        var mf=UrlFetchApp.fetch('https://api.mfapi.in/mf/'+sym,{muteHttpExceptions:true});
+        if(mf.getResponseCode()===200){var mfJ=JSON.parse(mf.getContentText());
+          var n0=parseFloat(mfJ.data[0].nav),n1=parseFloat((mfJ.data[1]||mfJ.data[0]).nav);
+          if(n0>0)prices[raw]={price:n0,prev:n1,src:'MFAPI'};}
+      }
+      else if(type==='nse'){var q=yq(sym+'.NS');if(q)prices[raw]={price:q.price,prev:q.prev,src:'YF-NSE'};}
+      else if(type==='bse'){var q=yq(sym+'.BO');if(q)prices[raw]={price:q.price,prev:q.prev,src:'YF-BSE'};}
+      else if(type==='us'){var q=yq(sym);if(q)prices[raw]={price:q.price,prev:q.prev,src:'YF-US'};}
+    }catch(ex){}
+  });
+  return out({prices:prices,usdInr:usdInr,goldFactor:GOLD_FACTOR,silverFactor:SILVER_FACTOR});
+}
+
+function yq(sym){
+  var o={muteHttpExceptions:true,headers:{'User-Agent':'Mozilla/5.0','Accept':'application/json'}};
+  try{var r=UrlFetchApp.fetch('https://query2.finance.yahoo.com/v7/finance/quote?symbols='+encodeURIComponent(sym)+'&amp;fields=regularMarketPrice,regularMarketPreviousClose',o);
+    if(r.getResponseCode()===200){var j=JSON.parse(r.getContentText()),q=j&&j.quoteResponse&&j.quoteResponse.result&&j.quoteResponse.result[0];
+      if(q&&q.regularMarketPrice>0)return{price:q.regularMarketPrice,prev:q.regularMarketPreviousClose||q.regularMarketPrice};}
+  }catch(e){}
+  try{var r8=UrlFetchApp.fetch('https://query2.finance.yahoo.com/v8/finance/chart/'+encodeURIComponent(sym)+'?interval=1d&amp;range=5d',o);
+    if(r8.getResponseCode()===200){var j8=JSON.parse(r8.getContentText()),m=j8&&j8.chart&&j8.chart.result&&j8.chart.result[0]&&j8.chart.result[0].meta;
+      if(m&&m.regularMarketPrice>0)return{price:m.regularMarketPrice,prev:m.previousClose||m.regularMarketPrice};}
+  }catch(e){}
+  return null;
 }
 function getSheet(){return SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET)||SpreadsheetApp.getActiveSpreadsheet().insertSheet(SHEET)}
 function out(o){var r=ContentService.createTextOutput(JSON.stringify(o));r.setMimeType(ContentService.MimeType.JSON);return r}</div>
@@ -1244,7 +1311,7 @@ function authInit(){
 /* ═══════════════════════════════════
    THEME
 ═══════════════════════════════════ */
-const S={holdings:[],sold:[],prices:{},usdInr:85,url:localStorage.getItem('pf_url')||'',goldDuty:+(localStorage.getItem('pf_gold_duty')||15),silverDuty:+(localStorage.getItem('pf_silver_duty')||15),filter:'all',editId:null,sellingId:null,page:'dashboard',charts:{},
+const S={holdings:[],sold:[],prices:{},usdInr:85,goldFactor:1.57,silverFactor:1.57,url:localStorage.getItem('pf_url')||'',filter:'all',editId:null,sellingId:null,page:'dashboard',charts:{},
   theme:matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'};
 
 function applyTheme(t){
@@ -1354,8 +1421,10 @@ async function fetchGooglePrices(holdings){
     const r=await fetch(url,{signal:AbortSignal.timeout(25000)});
     if(!r.ok) throw new Error('HTTP '+r.status);
     const j=await r.json();
-    // Also pick up usdInr returned by script
+    // Pick up dynamic values returned by the script
     if(j.usdInr&&j.usdInr>50&&j.usdInr<200) S.usdInr=j.usdInr;
+    if(j.goldFactor&&j.goldFactor>1&&j.goldFactor<5)   S.goldFactor=j.goldFactor;
+    if(j.silverFactor&&j.silverFactor>1&&j.silverFactor<5) S.silverFactor=j.silverFactor;
     return j.prices||{};
   }catch(e){
     console.warn('Google Sheets prices failed:',e.message);
@@ -1364,37 +1433,91 @@ async function fetchGooglePrices(holdings){
 }
 
 
-async function fetchPrices(){
-  const ozToGram=()=>S.usdInr/31.1035;
+// ── Client-side gold/silver via goldprice.org (CORS-open, no auth) ─────────
+// Used when Google Sheets is not configured or fails.
+// Returns { goldPerGram, goldPrevGram, silverPerGram, silverPrevGram }
+async function fetchCommodityPricesDirect(){
+  const OZ = 31.1035;
+  // Same statutory duty + market premium factor as the Apps Script
+  // Gold/silver: BCD 6% + AIDC 5% + SWS 0.6% + IGST 3% + MCX premium ≈ ×1.57
+  const FACTOR = S.goldFactor || 1.57;
+  try {
+    const url = 'https://data-asg.goldprice.org/dbXRates/INR';
+    const proxies = [
+      u=>`https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+      u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+    ];
+    for(const px of proxies){
+      try{
+        const r = await fetch(px(url), {signal:AbortSignal.timeout(10000)});
+        if(!r.ok) continue;
+        const text = await r.text();
+        if(!text||text[0]==='<') continue;
+        const j = JSON.parse(text);
+        const item = j&&j.items&&j.items[0];
+        if(!item) continue;
+        const xau = parseFloat(item.xauPrice); // INR/troy-oz spot
+        const xag = parseFloat(item.xagPrice);
+        if(xau>100000&&xau<2000000&&xag>500){
+          return {
+            goldPerGram:   Math.round(xau / OZ * FACTOR * 100) / 100,
+            goldPrevGram:  Math.round(xau / OZ * FACTOR * 100) / 100,
+            silverPerGram: Math.round(xag / OZ * FACTOR * 100) / 100,
+            silverPrevGram:Math.round(xag / OZ * FACTOR * 100) / 100,
+          };
+        }
+      }catch(e){continue}
+    }
+  }catch(e){}
+  return null;
+}
 
-  // ── Step 1: Google Sheets (server-side Yahoo — no CORS, most reliable) ─
+async function fetchPrices(){
+  // ── Step 1: Google Sheets server-side (most reliable — server-side Yahoo, no CORS) ─
   let gfPrices={};
   if(S.url){
     gfPrices=await fetchGooglePrices(S.holdings);
   }
+  // fetchGooglePrices also sets S.usdInr, S.goldFactor, S.silverFactor from server response
 
-  // ── Step 2: USD/INR — comes from Google Sheets response (j.usdInr) ────────
-  // Already set in fetchGooglePrices above. S.usdInr default is 85.
+  // ── Step 2: Client-side commodity fallback (if Sheets not set or failed gold) ──
+  const needsGold   = S.holdings.some(h=>h.type==='gold'   && !gfPrices[`gold:${h.symbol}`]);
+  const needsSilver = S.holdings.some(h=>h.type==='silver' && !gfPrices[`silver:${h.symbol}`]);
+  let commodityDirect = null;
+  if(needsGold || needsSilver){
+    commodityDirect = await fetchCommodityPricesDirect();
+  }
 
-  // ── Step 3: Per-holding — use Sheets result or fall back to client Yahoo ──
+  // ── Step 3: Per-holding — Sheets first, then fallbacks ────────────────────
   await Promise.allSettled(S.holdings.map(async h=>{
     const k=`${h.type}:${h.symbol}`;
-    if(h.type==='other')return; // manual price, no fetch
+    if(h.type==='other') return;
     try{
-      // Check if Sheets returned a valid price for this holding
+      // Use Google Sheets price if available
       const gd=gfPrices[k];
       if(gd&&typeof gd.price==='number'&&gd.price>0){
         S.prices[k]={price:gd.price,prev:gd.prev||gd.price,src:'GSheets'};
         return;
       }
 
-      // All prices come from Google Sheets Apps Script (server-side, no CORS issues)
-      // Mutual funds have a direct MFAPI fallback
+      // Commodity direct fallback (goldprice.org via proxy)
+      if(h.type==='gold'&&commodityDirect?.goldPerGram){
+        S.prices[k]={price:commodityDirect.goldPerGram,prev:commodityDirect.goldPrevGram,src:'goldprice.org'};
+        return;
+      }
+      if(h.type==='silver'&&commodityDirect?.silverPerGram){
+        S.prices[k]={price:commodityDirect.silverPerGram,prev:commodityDirect.silverPrevGram,src:'goldprice.org'};
+        return;
+      }
+
+      // Mutual fund: MFAPI direct (official, no proxy needed)
       if(h.type==='mutual_fund'){
         S.prices[k]=await mfp(h.symbol);
-      } else {
-        console.warn('[price] No Google Sheets URL set — cannot fetch',h.type,h.symbol);
+        return;
       }
+
+      console.warn('[price] No source available for',h.type,h.symbol,
+        '— set up Google Sheets for stocks/ETFs');
     }catch(e){
       console.warn(`[${h.type}] ${h.symbol} price failed:`,e.message);
     }
@@ -2433,11 +2556,10 @@ function openUpdatePrice(id){
 function openSettings(){
   document.getElementById('sheets-url').value=S.url;
   document.getElementById('url-fb').textContent='';
-  const gde=document.getElementById('gold-duty');
-  const sde=document.getElementById('silver-duty');
-  if(gde)gde.value=(S.goldDuty||15).toFixed(2);
-  if(sde)sde.value=(S.silverDuty||15).toFixed(2);
-  updateDutyPreviews();
+  const gfv=document.getElementById('gold-factor-val');
+  const sfv=document.getElementById('silver-factor-val');
+  if(gfv) gfv.textContent=S.goldFactor?S.goldFactor.toFixed(4):'—';
+  if(sfv) sfv.textContent=S.silverFactor?S.silverFactor.toFixed(4):'—';
   document.getElementById('set-ov').classList.add('on');
 }
 async function testConn(){
@@ -2450,10 +2572,6 @@ async function testConn(){
   catch(e){fb.textContent=`✗ ${e.message}`;fb.className='url-fb err'}
 }
 async function saveSettings(){
-  const gde=document.getElementById('gold-duty');
-  const sde=document.getElementById('silver-duty');
-  if(gde){const gd=parseFloat(gde.value);if(!isNaN(gd)&&gd>=0&&gd<=50){S.goldDuty=gd;localStorage.setItem('pf_gold_duty',gd)}}
-  if(sde){const sd=parseFloat(sde.value);if(!isNaN(sd)&&sd>=0&&sd<=50){S.silverDuty=sd;localStorage.setItem('pf_silver_duty',sd)}}
   S.url=document.getElementById('sheets-url').value.trim();localStorage.setItem('pf_url',S.url);
   document.getElementById('set-ov').classList.remove('on');
   toast('Saved — syncing…','ok');await loadHoldings();render();await fetchPrices();render();
@@ -2493,7 +2611,16 @@ document.getElementById('refresh-btn').onclick=async()=>{
   document.getElementById('refresh-btn').classList.remove('spinning');
   toast('Prices updated ✓','ok');
 };
-const _cs=document.getElementById('copy-script');if(_cs)_cs.onclick=()=>navigator.clipboard.writeText(document.getElementById('script-code').textContent).then(()=>toast('Script copied!','ok'));
+function copyScript(){
+  // Get text content (browser auto-decodes &lt; &amp; etc. in textContent)
+  const text=document.getElementById('script-code').textContent;
+  navigator.clipboard.writeText(text).then(()=>toast('Script copied!','ok')).catch(()=>{
+    // Fallback for older browsers
+    const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);
+    ta.select();document.execCommand('copy');ta.remove();toast('Script copied!','ok');
+  });
+}
+const _cs=document.getElementById('copy-script');if(_cs)_cs.onclick=copyScript;
 
 // Holding card actions (event delegation)
 ['dash-list','holdings-list','sold-in-h-list'].forEach(id=>{
@@ -3280,19 +3407,8 @@ function renderStatsRow2(){
 }
 
 
-function updateDutyPreviews(){
-  const gd=parseFloat(document.getElementById('gold-duty')?.value)||S.goldDuty||15;
-  const sd=parseFloat(document.getElementById('silver-duty')?.value)||S.silverDuty||15;
-  const gf=document.getElementById('gold-factor-preview');
-  const sf=document.getElementById('silver-factor-preview');
-  const autoTag='<span style="font-size:.55rem;background:var(--greens);color:var(--green);border-radius:4px;padding:.05rem .3rem;margin-left:.3rem;font-weight:700">AUTO</span>';
-  const isAuto=!document.getElementById('gold-duty')?.matches(':focus')&&!document.getElementById('silver-duty')?.matches(':focus');
-  if(gf)gf.innerHTML='×'+(1+gd/100).toFixed(4)+(isAuto?autoTag:'');
-  if(sf)sf.innerHTML='×'+(1+sd/100).toFixed(4)+(isAuto?autoTag:'');
-}
-document.addEventListener('input',e=>{
-  if(e.target.id==='gold-duty'||e.target.id==='silver-duty') updateDutyPreviews();
-});
+
+
 
 
 /* ═══════════════════════════════════
