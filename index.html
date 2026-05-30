@@ -1360,8 +1360,7 @@ function toStooq(sym){
 
 // Parse Stooq CSV: Date,Open,High,Low,Close,Volume
 function parseStooqCSV(csv){
-  const lines=csv.trim().split('
-');
+  const lines=csv.trim().split('\n');
   if(lines.length<2) return null;
   // Find last two data rows (most recent first after header)
   const rows=lines.slice(1).filter(l=>l.trim()).reverse();
