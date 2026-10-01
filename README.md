@@ -38,6 +38,17 @@ Stock quotes come from Yahoo Finance's unofficial public endpoints through Apps 
 
 ## Backups and updates
 
-Use **Settings → Download JSON backup** before changing browsers, clearing site data or replacing a portfolio. The import accepts Folio JSON backups, validates rows and previews counts before replacement. Existing legacy Google Sheet data requires conversion to the new purchase-lot schema; this repository does not silently migrate it. Preserve the old sheet until the imported portfolio has been checked.
+Use **Settings → Download JSON backup** before changing browsers, clearing site data or replacing a portfolio. The import accepts Folio JSON backups, validates rows and previews counts before replacement.
+
+### Migrate the old PORTFOL.IO sheet
+
+The legacy app stored `Holdings` rows with `id, name, type, symbol, units, buyPrice, buyDate, currency, notes, soldPrice, soldDate, soldNotes, status` in Google Sheets and mirrored them to `pf_data` in the browser. The new app can migrate either source without editing or deleting it:
+
+1. Open the old Google Sheet in the Google account that owns it. Select **Holdings** and choose **File → Download → Comma Separated Values (.csv)**. If dates appear as ambiguous day/month strings, format the `buyDate` and `soldDate` columns as `YYYY-MM-DD` first. Alternatively, open the old Apps Script `/exec` URL with that account and save its JSON response to a `.json` file. If you used the old and new app on the same GitHub Pages origin and browser, the importer can read the old `pf_data` cache directly.
+2. In Folio, open **Settings → Backups & portability → Migrate legacy PORTFOL.IO**. Set a USD/INR assumption if the old portfolio contains US stocks, select the CSV/JSON, or preview the available browser copy.
+3. Review row counts and warnings, export the current Folio backup, then choose **Add legacy records**. The importer adds records with stable IDs, skips exact repeats, and rejects changed duplicates without partially writing. Existing Folio records stay intact. Download the cloud portfolio first if this device has never read a configured cloud account.
+4. Compare active units, closed-trade proceeds, notes and INR P&L against the old app. Refresh prices and correct individual US buy/sale FX rates if you know them. Keep the old sheet and exported CSV/JSON until you have verified the migration and cloud sync.
+
+The old sheet did not store actual historical USD/INR rates, dividend entries, chart history, or manually updated `Other` prices. The browser copy may contain those `Other` prices. Old partial sales are separate closed rows; the importer keeps each row as its own lot to preserve cost and realized gains. The supplied legacy Apps Script URL was not accessible to the connected Google Drive account, so no user records are embedded in the repository or migrated automatically by this code update.
 
 The app is `index.html`; GitHub Pages can serve it directly from the `main` branch root. The backend is `apps-script/Code.gs`, also embedded inside the app's Copy Script button.
